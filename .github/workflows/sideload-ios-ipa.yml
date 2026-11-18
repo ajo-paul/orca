@@ -75,6 +75,24 @@ jobs:
       - name: Install mobile dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Patch ExpoModulesJSI Swift 6.2 Sendable check for Xcode 26.3
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const { execFileSync } = require("node:child_process");
+            const files = execFileSync("find", ["node_modules/.pnpm", "-path", "*/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/Values/JavaScriptObject.swift"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+            for (const f of files) {
+              const s = fs.readFileSync(f, "utf8");
+              const target = "    nonisolated(unsafe) let slot = buffer.baseAddress!\n    expo.emplaceUndefined(slot)\n    defer {\n      expo.destroyValues(slot, 1)\n    }\n    // The runtime can\x27t be deallocated during a call on its JavaScript thread, so it\x27s borrowed without\n    // a retain.\n    try runtime._withUnsafeGuaranteedRef { runtime in\n      try JavaScriptActor.assumeIsolated {\n        try encode(JavaScriptValue.Slot(slot), runtime)\n      }\n    }";
+              const replacement = "    let slot = buffer.baseAddress!\n    let slotAddress = UInt(bitPattern: slot)\n    expo.emplaceUndefined(slot)\n    defer {\n      expo.destroyValues(slot, 1)\n    }\n    try runtime._withUnsafeGuaranteedRef { runtime in\n      try JavaScriptActor.assumeIsolated {\n        let isolatedSlot = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: slotAddress)!\n        try encode(JavaScriptValue.Slot(isolatedSlot), runtime)\n      }\n    }";
+              if (!s.includes(target)) {
+                throw new Error("Expected snippet not found in " + f);
+              }
+              fs.writeFileSync(f, s.replace(target, replacement));
+              console.log("Patched", f);
+            }
+          '
+
       - name: Expo prebuild (iOS)
         run: npx expo prebuild --platform ios --no-install
 
