@@ -16,6 +16,7 @@ export type RpcClient = UnvalidatedRpcRequestPort & {
     onData: StreamingListener,
     options?: RpcStreamSubscribeOptions
   ) => () => void
+  sendBinaryFrame?: (bytes: Uint8Array) => boolean
   updateTerminalSubscriptionViewport: (
     terminal: string,
     viewport: { cols: number; rows: number }

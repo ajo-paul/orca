@@ -151,6 +151,9 @@ export class DirectRpcClient implements RpcClient {
     return this.streams.subscribe(method, params, onData, options)
   }
 
+  sendBinaryFrame = (bytes: Uint8Array): boolean =>
+    this.getState() === 'connected' && (this.socketSession?.sendBinary(bytes) ?? false)
+
   updateTerminalSubscriptionViewport(
     terminal: string,
     viewport: { cols: number; rows: number }
@@ -308,10 +311,8 @@ export class DirectRpcClient implements RpcClient {
     return false
   }
 
-  private sendLivenessProbe(id: string): boolean {
-    const frame = livenessProbeFrame(id)
-    return this.getState() === 'connected' && this.sendFrame(frame)
-  }
+  private sendLivenessProbe = (id: string): boolean =>
+    this.getState() === 'connected' && this.sendFrame(livenessProbeFrame(id))
 
   private waitForConnected(timeoutMs?: number): Promise<void> {
     if (

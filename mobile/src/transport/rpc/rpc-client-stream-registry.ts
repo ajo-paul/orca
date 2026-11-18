@@ -1,7 +1,5 @@
-import {
-  decodeBrowserScreencastFrame,
-  type BrowserScreencastFrame
-} from '../../browser/screencast/browser-screencast-protocol'
+import type { BrowserScreencastFrame } from '../../browser/screencast/browser-screencast-protocol'
+import { dispatchVoiceOrBrowserBinary } from './voice-binary-dispatch'
 import type {
   RpcStreamingListener,
   RpcStreamSubscribeOptions,
@@ -46,6 +44,7 @@ export class RpcClientStreamRegistry {
       envelope: subscribeOptions?.envelope,
       listener,
       onBinaryFrame: subscribeOptions?.onBinaryFrame,
+      onVoiceBinaryFrame: subscribeOptions?.onVoiceBinaryFrame,
       holdReplay: subscribeOptions?.holdReplay
     }
     this.streams.set(id, stream)
@@ -159,12 +158,13 @@ export class RpcClientStreamRegistry {
   }
 
   handleBinary(bytes: Uint8Array): void {
-    const browserFrame = decodeBrowserScreencastFrame(bytes)
-    if (browserFrame) {
-      this.handleBrowserFrame(browserFrame)
-      return
+    if (
+      !dispatchVoiceOrBrowserBinary(bytes, this.streams.values(), (frame) => {
+        this.handleBrowserFrame(frame)
+      })
+    ) {
+      this.terminalRouter.handle(bytes)
     }
-    this.terminalRouter.handle(bytes)
   }
 
   updateTerminalViewport(terminal: string, viewport: { cols: number; rows: number }): void {

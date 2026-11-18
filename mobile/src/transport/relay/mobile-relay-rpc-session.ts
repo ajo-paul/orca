@@ -125,6 +125,8 @@ export function connectMobileRelayRpcSession(args: {
       return streams.subscribe(method, params, listener, options)
     },
 
+    sendBinaryFrame: (bytes) => !closed && state === 'connected' && link.sendBinary(bytes),
+
     updateTerminalSubscriptionViewport(terminal, viewport) {
       streams.updateTerminalViewport(terminal, viewport)
     },

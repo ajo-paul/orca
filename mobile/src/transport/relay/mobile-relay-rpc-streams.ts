@@ -1,4 +1,9 @@
-import { decodeBrowserScreencastFrame } from '../../browser/screencast/browser-screencast-protocol'
+import { dispatchVoiceOrBrowserBinary } from '../rpc/voice-binary-dispatch'
+import {
+  unsubscribeSlot,
+  type StreamRecord,
+  type StreamUnsubscribe
+} from './mobile-relay-stream-types'
 import {
   handleTerminalBinaryFrame,
   type TerminalSnapshotState
@@ -14,43 +19,6 @@ import { isStreamingOpenerReply } from '../rpc/rpc-acceptance-policies'
 import type { RpcClient } from '../rpc/rpc-client-contract'
 import type { RpcEnvelopeFields, RpcRequestFrame } from '../rpc/rpc-envelope-fields'
 import type { RpcResponse, RpcSuccess } from '../rpc/rpc-wire-types'
-
-type StreamRecord = {
-  method: string
-  params: unknown
-  envelope?: RpcEnvelopeFields
-  listener?: (result: unknown) => void
-  onBinaryFrame?: Parameters<RpcClient['subscribe']>[3] extends
-    | { onBinaryFrame?: infer Listener }
-    | undefined
-    ? Listener
-    : never
-  streamIds: Set<number>
-  subscriptionId?: string
-  cancelled: boolean
-  /** Position in this session's send order, or null while unsent. */
-  sendOrder: number | null
-  receivedSnapshot?: boolean
-}
-
-type StreamUnsubscribe = { method: string; params: Record<string, unknown> }
-
-// Include the whole envelope in cleanup-slot identity; sort keys so equivalent routing names the same slot.
-function unsubscribeSlot(
-  { method, params }: StreamUnsubscribe,
-  envelope: RpcEnvelopeFields | undefined
-): string | null {
-  if (!('subscriptionId' in params)) {
-    return null
-  }
-  const client =
-    'client' in params && typeof params.client === 'object' && params.client !== null
-      ? params.client
-      : null
-  const clientId = client && 'id' in client ? client.id : null
-  const routing = envelope ? Object.entries(envelope).sort(([a], [b]) => (a < b ? -1 : 1)) : null
-  return JSON.stringify([method, params.subscriptionId, clientId, routing])
-}
 
 function buildParamsUnsubscribe(
   method: string,
@@ -98,6 +66,7 @@ export class MobileRelayRpcStreams {
       envelope: subscribeOptions?.envelope,
       listener,
       onBinaryFrame: subscribeOptions?.onBinaryFrame,
+      onVoiceBinaryFrame: subscribeOptions?.onVoiceBinaryFrame,
       streamIds: new Set(),
       cancelled: false,
       sendOrder: null
@@ -194,9 +163,11 @@ export class MobileRelayRpcStreams {
   }
 
   handleBinary(bytes: Uint8Array): void {
-    const browserFrame = decodeBrowserScreencastFrame(bytes)
-    if (browserFrame && this.activeBrowserStream?.onBinaryFrame) {
-      this.activeBrowserStream.onBinaryFrame(browserFrame)
+    if (
+      dispatchVoiceOrBrowserBinary(bytes, this.streams.values(), (frame) => {
+        this.activeBrowserStream?.onBinaryFrame?.(frame)
+      })
+    ) {
       return
     }
     handleTerminalBinaryFrame(bytes, {

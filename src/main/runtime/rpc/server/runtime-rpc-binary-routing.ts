@@ -1,5 +1,10 @@
 import type { WebSocket } from 'ws'
 import type { TerminalStreamFrame } from '../../../../shared/terminal/stream/terminal-stream-protocol'
+import {
+  decodeVoiceStreamFrame,
+  isVoiceStreamFrame
+} from '../../../../shared/voice-stream-protocol'
+import { getVoiceBridgeService } from '../../../voice-bridge/voice-bridge-service'
 import { DeviceRegistry } from './pairing/device-registry'
 import { loadOrCreateE2EEKeypair, type E2EEKeypair } from './pairing/e2ee-keypair'
 import { ensureHostInstanceIdentity, type HostIdentityOutcome } from '../../host-instance-identity'
@@ -28,7 +33,18 @@ export class RuntimeRpcBinaryRouting extends RuntimeRpcState {
   }
 
   protected handleWebSocketBinaryMessage(bytes: Uint8Array<ArrayBufferLike>, ws: WebSocket): void {
-    this.binaryMessageRouter.dispatch(this.mobileSocketWiring?.getConnectionId(ws), bytes)
+    const connectionId = this.mobileSocketWiring?.getConnectionId(ws)
+    if (!connectionId) {
+      return
+    }
+    if (isVoiceStreamFrame(bytes)) {
+      const voiceFrame = decodeVoiceStreamFrame(bytes)
+      if (voiceFrame) {
+        getVoiceBridgeService(this.runtime).handleAudioInBinary(voiceFrame)
+      }
+      return
+    }
+    this.binaryMessageRouter.dispatch(connectionId, bytes)
   }
 
   protected registerWebSocketDispatchAbort(ws: WebSocket): {

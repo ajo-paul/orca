@@ -2,6 +2,7 @@ import type { PairedE2EEFraming } from '../../../../src/shared/remote-runtime/e2
 import { PAIRED_E2EE_HANDSHAKE_DEADLINE_MS } from '../../../../src/shared/remote-runtime/e2ee/paired-e2ee-handshake-deadline'
 import type { PairedE2EEFramingPolicy } from '../../../../src/shared/remote-runtime/e2ee/paired-e2ee-framing-policy'
 import { createDirectSocketFraming, type DirectSocketFraming } from './direct-socket-framing'
+import { sendSocketBinaryFrame } from './voice-binary-dispatch'
 import { isRpcResponse } from './rpc-response-shape'
 import { AUTH_REJECTED } from './rpc-client-authentication-retry'
 import { isStaleRpcSocketEvent, logRpcSocketClose } from './rpc-socket-close-evidence'
@@ -93,6 +94,13 @@ export class RpcClientSocketSession {
     }
     return false
   }
+
+  sendBinary = (bytes: Uint8Array): boolean =>
+    sendSocketBinaryFrame(this.socket, this.framing, bytes, () => {
+      if (this.options.getCurrentSocket() === this.socket) {
+        this.options.onForcedClose(this)
+      }
+    })
 
   close(): void {
     this.socket.close()

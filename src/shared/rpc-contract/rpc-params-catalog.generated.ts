@@ -939,6 +939,16 @@ import {
 } from './terminal/terminal-viewport-schemas-params'
 import { UpdaterCheckParams } from './updater/updater-params'
 import {
+  VoiceAudioInParams,
+  VoiceEndCallParams,
+  VoiceFocusParams,
+  VoicePauseCallParams,
+  VoiceSendTextParams,
+  VoiceStartCallParams,
+  VoiceSubscribeParams,
+  VoiceUnsubscribeParams
+} from './voice-params'
+import {
   WebhookCallShow,
   WebhookCalls,
   WebhookCard,
@@ -2082,6 +2092,15 @@ export const RPC_PARAMS_BY_METHOD = {
   'updater.getStatus': null,
   'updater.install': null,
   'usage.call': UsageCallParams,
+  'voice.audioIn': VoiceAudioInParams,
+  'voice.endCall': VoiceEndCallParams,
+  'voice.focus': VoiceFocusParams,
+  'voice.pause': VoicePauseCallParams,
+  'voice.sendText': VoiceSendTextParams,
+  'voice.startCall': VoiceStartCallParams,
+  'voice.status': null,
+  'voice.subscribe': VoiceSubscribeParams,
+  'voice.unsubscribe': VoiceUnsubscribeParams,
   'webhooks.call': WebhookCallShow,
   'webhooks.calls': WebhookCalls,
   'webhooks.card': WebhookCard,

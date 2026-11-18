@@ -27,6 +27,7 @@ export type DirectSocketFraming = {
   handleInbound: (raw: unknown) => void
   // false = not ready yet; throws when the socket write fails.
   sendText: (plaintext: string) => boolean
+  sendBinary: (plaintext: Uint8Array) => boolean
   dispose: () => void
 }
 
@@ -76,6 +77,7 @@ function createV2Framing(args: Parameters<typeof createDirectSocketFraming>[0]) 
     },
     handleInbound: (raw: unknown) => void channel.handleMessage(raw),
     sendText: (plaintext: string) => channel.sendText(plaintext),
+    sendBinary: (plaintext: Uint8Array) => channel.sendBinary(plaintext),
     dispose: () => channel.dispose()
   }
 }
@@ -180,6 +182,7 @@ function createLegacyFraming(args: Parameters<typeof createDirectSocketFraming>[
     },
     handleInbound: (raw: unknown) => void handleInbound(raw),
     sendText,
+    sendBinary: () => false,
     dispose: () => {
       disposed = true
     }

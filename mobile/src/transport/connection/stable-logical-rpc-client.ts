@@ -129,6 +129,13 @@ export function createStableLogicalRpcClient(
       }
     },
 
+    sendBinaryFrame(bytes) {
+      if (closed || suspended) {
+        return false
+      }
+      return activeSession.sendBinaryFrame?.(bytes) ?? false
+    },
+
     updateTerminalSubscriptionViewport(terminal, viewport) {
       for (const record of subscriptions.values()) {
         if (
