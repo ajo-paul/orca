@@ -18,6 +18,10 @@ on:
       - 'mobile/**'
       - '.github/workflows/sideload-ios-ipa.yml'
 
+concurrency:
+  group: sideload-ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-unsigned-ipa:
     name: Build Unsigned iOS IPA
