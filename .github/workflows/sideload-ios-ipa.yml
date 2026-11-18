@@ -1,0 +1,106 @@
+name: Sideload iOS IPA (Unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_profile:
+        description: 'Build configuration (release = standalone JS bundle, debug-dev-client = Metro dev client)'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug-dev-client
+  push:
+    branches:
+      - feat/dev-oncall-voice
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/sideload-ios-ipa.yml'
+
+jobs:
+  build-unsigned-ipa:
+    name: Build Unsigned iOS IPA
+    # Expo SDK 55 (expo-modules-core) uses Swift 6 (@MainActor), requiring Xcode 26.x -> macos-26.
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.5'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Install root dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Install mobile dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Expo prebuild (iOS)
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        run: npx pod-install ios
+
+      - name: Build unsigned .xcarchive
+        env:
+          BUILD_PROFILE: ${{ github.event.inputs.build_profile || 'release' }}
+        run: |
+          set -euo pipefail
+          CONFIG="Release"
+          if [ "$BUILD_PROFILE" = "debug-dev-client" ]; then
+            CONFIG="Debug"
+          fi
+          echo "Building configuration: $CONFIG (profile=$BUILD_PROFILE)"
+          xcodebuild \
+            -workspace ios/Orca.xcworkspace \
+            -scheme Orca \
+            -configuration "$CONFIG" \
+            -sdk iphoneos \
+            -archivePath /tmp/Orca.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_IDENTITY=""
+
+      - name: Package unsigned .ipa
+        env:
+          BUILD_PROFILE: ${{ github.event.inputs.build_profile || 'release' }}
+        run: |
+          set -euo pipefail
+          IPA_NAME="Orca-DevOncall-unsigned.ipa"
+          if [ "$BUILD_PROFILE" = "debug-dev-client" ]; then
+            IPA_NAME="Orca-DevOncall-dev-client-unsigned.ipa"
+          fi
+          rm -rf /tmp/ipa-stage
+          mkdir -p /tmp/ipa-stage/Payload
+          cp -R /tmp/Orca.xcarchive/Products/Applications/Orca.app /tmp/ipa-stage/Payload/
+          cd /tmp/ipa-stage
+          zip -qry "${GITHUB_WORKSPACE}/${IPA_NAME}" Payload
+          ls -lh "${GITHUB_WORKSPACE}/${IPA_NAME}"
+
+      - name: Upload unsigned .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Orca-DevOncall-unsigned-${{ github.event.inputs.build_profile || 'release' }}
+          path: Orca-DevOncall-*.ipa
+          retention-days: 14
