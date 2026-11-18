@@ -13,6 +13,7 @@ class ExpoTwoWayAudioModule : Module() {
         private const val ON_INPUT_VOLUME_LEVEL_EVENT = "onInputVolumeLevelData"
         private const val ON_RECORDING_CHANGE_EVENT = "onRecordingChange"
         private const val ON_AUDIO_INTERRUPTION_EVENT = "onAudioInterruption"
+        private const val ON_PLAYBACK_STATE_CHANGE_EVENT = "onPlaybackStateChange"
         var audioEngine: AudioEngine? = null
     }
 
@@ -66,6 +67,22 @@ class ExpoTwoWayAudioModule : Module() {
 
          Function("bypassVoiceProcessing") { bypass: Boolean ->
              audioEngine?.bypassVoiceProcessing(bypass)
+         }
+
+         Function("playPcm24k") { base64Data: String ->
+             audioEngine?.playPcm24k(base64Data)
+         }
+
+         Function("interruptPlayback") {
+             audioEngine?.interruptPlayback()
+         }
+
+         Function("setSpeakerOutput") { enabled: Boolean ->
+             audioEngine?.setSpeakerOutput(enabled)
+         }
+
+         Function("setHoldAudioMode") { onHoldQuiet: Boolean ->
+             audioEngine?.setHoldAudioMode(onHoldQuiet)
          }
 
         Function("getMicrophoneModeIOS") {
@@ -135,6 +152,7 @@ class ExpoTwoWayAudioModule : Module() {
             ON_INPUT_VOLUME_LEVEL_EVENT,
             ON_RECORDING_CHANGE_EVENT,
             ON_AUDIO_INTERRUPTION_EVENT,
+            ON_PLAYBACK_STATE_CHANGE_EVENT,
             SPEECH_TEXT_EVENT,
             SPEECH_ERROR_EVENT,
             SPEECH_DOWNLOAD_PROGRESS_EVENT
@@ -153,6 +171,12 @@ class ExpoTwoWayAudioModule : Module() {
                 sendEvent(ON_AUDIO_INTERRUPTION_EVENT, bundleOf("data" to data))
                 sendEvent(ON_RECORDING_CHANGE_EVENT, bundleOf(
                     "data" to (audioEngine?.isRecording ?: false)
+                ))
+            }
+            onPlaybackStateChangeCallback = { speaking, rms ->
+                sendEvent(ON_PLAYBACK_STATE_CHANGE_EVENT, bundleOf(
+                    "speaking" to speaking,
+                    "rms" to rms
                 ))
             }
         }

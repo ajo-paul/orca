@@ -17,11 +17,17 @@ export interface AudioInterruptionEvent {
   data: string
 }
 
+export interface PlaybackStateChangeEvent {
+  speaking: boolean
+  rms: number
+}
+
 export interface ExpoTwoWayAudioEventMap {
   onMicrophoneData: MicrophoneDataEvent
   onInputVolumeLevelData: VolumeLevelEvent
   onRecordingChange: RecordingChangeEvent
   onAudioInterruption: AudioInterruptionEvent
+  onPlaybackStateChange: PlaybackStateChangeEvent
   onSpeechText: SpeechTextEvent
   onSpeechError: SpeechErrorEvent
   onSpeechDownloadProgress: SpeechDownloadProgressEvent
@@ -31,6 +37,7 @@ export type MicrophoneDataCallback = (event: MicrophoneDataEvent) => void
 export type VolumeLevelCallback = (event: VolumeLevelEvent) => void
 export type RecordingChangeCallback = (event: RecordingChangeEvent) => void
 export type AudioInterruptionCallback = (event: AudioInterruptionEvent) => void
+export type PlaybackStateChangeCallback = (event: PlaybackStateChangeEvent) => void
 
 export function addExpoTwoWayAudioEventListener<K extends keyof ExpoTwoWayAudioEventMap>(
   eventName: K,

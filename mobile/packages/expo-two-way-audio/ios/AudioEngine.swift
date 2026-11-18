@@ -3,18 +3,27 @@ import Foundation
 
 class AudioEngine {
     private var avAudioEngine = AVAudioEngine()
+    private var playerNode = AVAudioPlayerNode()
     private var engineConfigChangeObserver: Any?
     private var sessionInterruptionObserver: Any?
     private var mediaServicesResetObserver: Any?
+    private var routeChangeObserver: Any?
 
     public private(set) var voiceIOFormat: AVAudioFormat
+    private let playback24kFormat: AVAudioFormat
     public private(set) var isRecording = false
     private var interruptionIntent = RecordingInterruptionIntent()
     private var isTornDown = false
+    private var isHoldAudioQuiet = false
+    private var wasRecordingBeforeHold = false
+    private let playbackLock = NSLock()
+    private var queuedBufferCount = 0
+    private var playbackGeneration: UInt64 = 0
 
     public var onMicDataCallback: ((Data) -> Void)?
     public var onInputVolumeCallback: ((Float) -> Void)?
     public var onAudioInterruptionCallback: ((String) -> Void)?
+    public var onPlaybackStateChangeCallback: ((Bool, Float) -> Void)?
 
     private var inputBuffer = [Float](repeating: 0, count: 2048)
     private var inputBufferIndex = 0
@@ -24,10 +33,14 @@ class AudioEngine {
     }
 
     init() throws {
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1) else {
+        avAudioEngine.attach(playerNode)
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1),
+              let format24k = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false) else {
             throw AudioEngineError.audioFormatError
         }
         voiceIOFormat = format
+        playback24kFormat = format24k
         print("Voice IO format: \(String(describing: voiceIOFormat))")
 
         engineConfigChangeObserver = NotificationCenter.default.addObserver(
@@ -47,6 +60,13 @@ class AudioEngine {
             object: AVAudioSession.sharedInstance(),
             queue: .main) { [weak self] _ in
                 self?.handleMediaServicesWereReset()
+            }
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main) { [weak self] _ in
+                guard let self, !self.isHoldAudioQuiet else { return }
+                self.checkEngineIsRunning()
             }
 
         self.setupAudioSession()
@@ -68,6 +88,9 @@ class AudioEngine {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = mediaServicesResetObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = routeChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -108,7 +131,8 @@ class AudioEngine {
 
         avAudioEngine.inputNode.isVoiceProcessingInputMuted = !isRecording
 
-        // Voice processing runs input and output as one unit, so keep the output side wired even though nothing plays.
+        // Voice processing runs input and output as one unit; connect 24kHz playerNode -> mainMixer -> outputNode so VoiceProcessingIO uses it as AEC reference.
+        avAudioEngine.connect(playerNode, to: avAudioEngine.mainMixerNode, format: playback24kFormat)
         avAudioEngine.connect(avAudioEngine.mainMixerNode, to: avAudioEngine.outputNode, format: voiceIOFormat)
 
         input.installTap(onBus: 0, bufferSize: 2048, format: voiceIOFormat) { [weak self] buffer, when in
@@ -157,6 +181,119 @@ class AudioEngine {
         input.isVoiceProcessingBypassed = bypass
     }
 
+    func playPcm24k(_ base64Data: String) {
+        guard !isTornDown, !isHoldAudioQuiet else { return }
+        guard let pcmData = Data(base64Encoded: base64Data), pcmData.count >= 2 else {
+            return
+        }
+        let frameCount = UInt32(pcmData.count / 2)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: playback24kFormat, frameCapacity: frameCount),
+              let destPtr = buffer.floatChannelData?[0] else {
+            return
+        }
+        buffer.frameLength = frameCount
+
+        var sumSquares: Float = 0
+        pcmData.withUnsafeBytes { (rawBufferPointer: UnsafeRawBufferPointer) in
+            guard let basePtr = rawBufferPointer.baseAddress else { return }
+            let int16Ptr = basePtr.assumingMemoryBound(to: Int16.self)
+            for i in 0..<Int(frameCount) {
+                let sample = Float(Int16(littleEndian: int16Ptr[i])) / 32768.0
+                let clamped = max(-1.0, min(1.0, sample))
+                destPtr[i] = clamped
+                sumSquares += clamped * clamped
+            }
+        }
+        let rms = frameCount > 0 ? sqrt(sumSquares / Float(frameCount)) : 0
+
+        checkEngineIsRunning()
+
+        playbackLock.lock()
+        let generation = playbackGeneration
+        queuedBufferCount += 1
+        playbackLock.unlock()
+
+        onPlaybackStateChangeCallback?(true, rms)
+
+        playerNode.scheduleBuffer(buffer) { [weak self] in
+            self?.handlePlaybackBufferCompleted(generation: generation)
+        }
+        if !playerNode.isPlaying {
+            playerNode.play()
+        }
+    }
+
+    private func handlePlaybackBufferCompleted(generation: UInt64) {
+        playbackLock.lock()
+        let shouldEmitStopped: Bool
+        if generation == playbackGeneration && queuedBufferCount > 0 {
+            queuedBufferCount -= 1
+            shouldEmitStopped = (queuedBufferCount == 0)
+        } else {
+            shouldEmitStopped = false
+        }
+        playbackLock.unlock()
+
+        if shouldEmitStopped {
+            onPlaybackStateChangeCallback?(false, 0)
+        }
+    }
+
+    func interruptPlayback() {
+        playbackLock.lock()
+        playbackGeneration &+= 1
+        queuedBufferCount = 0
+        playbackLock.unlock()
+
+        playerNode.stop()
+        playerNode.reset()
+        onPlaybackStateChangeCallback?(false, 0)
+    }
+
+    func setSpeakerOutput(_ enabled: Bool) {
+        let session = AVAudioSession.sharedInstance()
+        let externalPortTypes: Set<AVAudioSession.Port> = [
+            .bluetoothHFP,
+            .bluetoothA2DP,
+            .bluetoothLE,
+            .headphones,
+            .carAudio
+        ]
+        let hasExternalRoute = session.currentRoute.outputs.contains { externalPortTypes.contains($0.portType) }
+        do {
+            if enabled && !hasExternalRoute {
+                try session.overrideOutputAudioPort(.speaker)
+            } else {
+                try session.overrideOutputAudioPort(.none)
+            }
+        } catch {
+            print("Could not override output audio port: \(error.localizedDescription)")
+        }
+    }
+
+    func setHoldAudioMode(_ onHoldQuiet: Bool) {
+        guard !isTornDown, onHoldQuiet != isHoldAudioQuiet else { return }
+        isHoldAudioQuiet = onHoldQuiet
+        if onHoldQuiet {
+            wasRecordingBeforeHold = isRecording
+            interruptPlayback()
+            _ = toggleRecording(false)
+            avAudioEngine.pause()
+            do {
+                try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                print("Could not deactivate audio session for hold: \(error.localizedDescription)")
+            }
+        } else {
+            setupAudioSession()
+            checkEngineIsRunning()
+            if wasRecordingBeforeHold {
+                _ = toggleRecording(true)
+            }
+            wasRecordingBeforeHold = false
+        }
+    }
+
     func toggleRecording(_ val: Bool, preservingInterruptionIntent: Bool = false) -> Bool {
         guard !val || !isTornDown else { return false }
         if !preservingInterruptionIntent {
@@ -202,6 +339,7 @@ class AudioEngine {
     func tearDown() {
         guard !isTornDown else { return }
         isTornDown = true
+        interruptPlayback()
         // Stop I/O first; deactivating a session with running I/O returns a busy error.
         avAudioEngine.stop()
         stopRecording()

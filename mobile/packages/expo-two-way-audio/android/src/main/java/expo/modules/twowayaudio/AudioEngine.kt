@@ -8,19 +8,26 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.PowerManager
+import android.util.Base64
 import android.util.Log
 import androidx.annotation.RequiresApi
+import java.util.Queue
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.pow
 
 
 // The microphone rate; on-device speech requires it too.
 internal const val MIC_SAMPLE_RATE = 16000
+internal const val PLAYBACK_24K_SAMPLE_RATE = 24000
 
 class AudioEngine (context: Context) {
     private val SAMPLE_RATE = MIC_SAMPLE_RATE
@@ -29,12 +36,17 @@ class AudioEngine (context: Context) {
 
     private lateinit var audioRecord: AudioRecord
     private lateinit var audioManager: AudioManager
+    private lateinit var audioTrack24k: AudioTrack
     private var audioFocusRequest: AudioFocusRequest? = null
     private var audioFocusChangeListener: AudioManager.OnAudioFocusChangeListener? = null
     private var audioDeviceCallback: android.media.AudioDeviceCallback? = null
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
     private val executorServiceMicrophone = Executors.newFixedThreadPool(1)
+    private val executorServicePlayback24k = Executors.newFixedThreadPool(1)
+    private val pcm24kQueue: Queue<Pair<Long, ByteArray>> = ConcurrentLinkedQueue()
+    private val playback24kRunning = AtomicBoolean(false)
+    private val playback24kGeneration = AtomicLong(0L)
     private var speakerDevice: AudioDeviceInfo? = null
     private var bridgeWindowStartedAtMs = System.currentTimeMillis()
     private var micEvents = 0
@@ -43,10 +55,14 @@ class AudioEngine (context: Context) {
     // Read by the mic tap loop; written on the main (focus loss, pause), JS and tap threads.
     @Volatile
     var isRecording = false
+    private var wasRecordingBeforeHold = false
+    @Volatile
+    private var isHoldAudioQuiet = false
 
     var onMicDataCallback: ((ByteArray) -> Unit)? = null
     var onInputVolumeCallback: ((Float) -> Unit)? = null
     var onAudioInterruptionCallback: ((String) -> Unit)? = null
+    var onPlaybackStateChangeCallback: ((Boolean, Float) -> Unit)? = null
 
     init {
         initializeAudio(context)
@@ -93,6 +109,29 @@ class AudioEngine (context: Context) {
             audioManager.registerAudioDeviceCallback(callback, null)
         } else {
             updateLegacyAudioRouting()
+        }
+
+        val bufferSize24k = AudioTrack.getMinBufferSize(
+            PLAYBACK_24K_SAMPLE_RATE,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AUDIO_FORMAT
+        ).coerceAtLeast(4800)
+
+        audioTrack24k = AudioTrack(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+            AudioFormat.Builder()
+                .setEncoding(AUDIO_FORMAT)
+                .setSampleRate(PLAYBACK_24K_SAMPLE_RATE)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build(),
+            bufferSize24k,
+            AudioTrack.MODE_STREAM,
+            audioManager.generateAudioSessionId()
+        ).apply {
+            play()
         }
     }
 
@@ -305,6 +344,142 @@ class AudioEngine (context: Context) {
         }
     }
 
+    fun playPcm24k(base64Data: String) {
+        if (isHoldAudioQuiet || base64Data.isEmpty()) return
+        val bytes = try {
+            Base64.decode(base64Data, Base64.DEFAULT)
+        } catch (_: Exception) {
+            return
+        }
+        if (bytes.size < 2) return
+
+        val gen = playback24kGeneration.get()
+        pcm24kQueue.add(gen to bytes)
+        if (playback24kRunning.compareAndSet(false, true)) {
+            drainPcm24kQueue()
+        }
+    }
+
+    private fun drainPcm24kQueue() {
+        executorServicePlayback24k.execute {
+            try {
+                while (true) {
+                    val item = pcm24kQueue.poll() ?: break
+                    val (gen, data) = item
+                    if (gen != playback24kGeneration.get() || isHoldAudioQuiet) continue
+                    val rms = calculateLinearRMS(data)
+                    onPlaybackStateChangeCallback?.invoke(true, rms)
+                    audioTrack24k.write(data, 0, data.size)
+                }
+            } catch (e: Exception) {
+                Log.e("AudioEngine", "Error playing 24kHz audio", e)
+            } finally {
+                playback24kRunning.set(false)
+                if (pcm24kQueue.isNotEmpty() && !isHoldAudioQuiet && playback24kRunning.compareAndSet(false, true)) {
+                    drainPcm24kQueue()
+                } else {
+                    onPlaybackStateChangeCallback?.invoke(false, 0.0F)
+                }
+            }
+        }
+    }
+
+    fun interruptPlayback() {
+        playback24kGeneration.incrementAndGet()
+        pcm24kQueue.clear()
+        if (::audioTrack24k.isInitialized) {
+            try {
+                audioTrack24k.pause()
+                audioTrack24k.flush()
+                if (!isHoldAudioQuiet) {
+                    audioTrack24k.play()
+                }
+            } catch (e: Exception) {
+                Log.w("AudioEngine", "Error interrupting 24kHz playback", e)
+            }
+        }
+        onPlaybackStateChangeCallback?.invoke(false, 0.0F)
+    }
+
+    fun setSpeakerOutput(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            var externalDevice: AudioDeviceInfo? = null
+            for (device in devices) {
+                if (device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    speakerDevice = device
+                } else if (device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                    device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                ) {
+                    externalDevice = device
+                    break
+                }
+            }
+            if (externalDevice != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    try { audioManager.setCommunicationDevice(externalDevice) } catch (_: Exception) {}
+                }
+                return
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    if (enabled) speakerDevice?.let { audioManager.setCommunicationDevice(it) }
+                    else audioManager.clearCommunicationDevice()
+                } catch (_: Exception) {}
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = enabled
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val isExternal = audioManager.isWiredHeadsetOn || audioManager.isBluetoothScoOn || audioManager.isBluetoothA2dpOn
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = enabled && !isExternal
+        }
+    }
+
+    @SuppressLint("NewApi")
+    fun setHoldAudioMode(onHoldQuiet: Boolean) {
+        if (onHoldQuiet == isHoldAudioQuiet) return
+        isHoldAudioQuiet = onHoldQuiet
+        if (onHoldQuiet) {
+            wasRecordingBeforeHold = isRecording
+            interruptPlayback()
+            stopRecording()
+            if (::audioTrack24k.isInitialized) audioTrack24k.pause()
+            audioManager.mode = AudioManager.MODE_NORMAL
+            abandonAudioFocus()
+        } else {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            try { requestAudioFocus() } catch (e: Exception) {
+                Log.w("AudioEngine", "Could not re-acquire audio focus after hold", e)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) updateAudioRouting()
+            else updateLegacyAudioRouting()
+            if (::audioTrack24k.isInitialized) audioTrack24k.play()
+            if (wasRecordingBeforeHold && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                toggleRecording(true)
+            }
+            wasRecordingBeforeHold = false
+        }
+    }
+
+    private fun calculateLinearRMS(buffer: ByteArray): Float {
+        val sampleCount = buffer.size / 2
+        if (sampleCount <= 0) return 0.0f
+        var sumSquares = 0.0f
+        for (i in 0 until sampleCount) {
+            val lo = buffer[i * 2].toInt() and 0xFF
+            val hi = buffer[i * 2 + 1].toInt()
+            val sample = ((hi shl 8) or lo).toShort()
+            val normalized = sample / 32768.0f
+            sumSquares += normalized * normalized
+        }
+        return kotlin.math.sqrt(sumSquares / sampleCount)
+    }
+
     // Recording in the background is not supported, so leaving the app interrupts it.
     fun endRecordingForPause() {
         endRecordingForInterruption("began")
@@ -317,10 +492,17 @@ class AudioEngine (context: Context) {
     @SuppressLint("NewApi")
     fun tearDown() {
         stopRecording()
+        interruptPlayback()
+        if (::audioTrack24k.isInitialized) {
+            audioTrack24k.stop()
+            audioTrack24k.release()
+        }
         echoCanceler?.release()
         echoCanceler = null
         noiseSuppressor?.release()
         noiseSuppressor = null
+        pcm24kQueue.clear()
+        playback24kRunning.set(false)
         audioManager.mode = AudioManager.MODE_NORMAL
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             audioDeviceCallback?.let { audioManager.unregisterAudioDeviceCallback(it) }
@@ -331,6 +513,7 @@ class AudioEngine (context: Context) {
         }
         abandonAudioFocus()
         executorServiceMicrophone.shutdownNow()
+        executorServicePlayback24k.shutdownNow()
     }
 
 

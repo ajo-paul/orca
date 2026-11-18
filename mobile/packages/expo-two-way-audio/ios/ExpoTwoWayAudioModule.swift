@@ -5,6 +5,7 @@ let ON_MIC_DATA_EVENT_NAME = "onMicrophoneData"
 let ON_INPUT_VOLUME_LEVEL_EVENT_NAME = "onInputVolumeLevelData"
 let ON_RECORDING_CHANGE_EVENT_NAME = "onRecordingChange"
 let ON_AUDIO_INTERRUPTION_EVENT_NAME = "onAudioInterruption"
+let ON_PLAYBACK_STATE_CHANGE_EVENT_NAME = "onPlaybackStateChange"
 
 public class ExpoTwoWayAudioModule: Module {
     private var audioEngine: AudioEngine?
@@ -44,6 +45,7 @@ public class ExpoTwoWayAudioModule: Module {
                 self.setupMicrophoneCallback()
                 self.setupInputAudioLevelCallback()
                 self.setupAudioInterruptionCallback()
+                self.setupPlaybackStateChangeCallback()
                 return true
             } catch {
                 print("Failed to initialize AudioEngine: \(error)")
@@ -122,6 +124,22 @@ public class ExpoTwoWayAudioModule: Module {
             self.audioEngine?.bypassVoiceProcessing(bypass)
         }
 
+        Function("playPcm24k") { (base64Data: String) in
+            self.audioEngine?.playPcm24k(base64Data)
+        }
+
+        Function("interruptPlayback") {
+            self.audioEngine?.interruptPlayback()
+        }
+
+        Function("setSpeakerOutput") { (enabled: Bool) in
+            self.audioEngine?.setSpeakerOutput(enabled)
+        }
+
+        Function("setHoldAudioMode") { (onHoldQuiet: Bool) in
+            self.audioEngine?.setHoldAudioMode(onHoldQuiet)
+        }
+
         AsyncFunction("getMicrophonePermissionsAsync") { (promise: Promise) in
             EXPermissionsMethodsDelegate.getPermissionWithPermissionsManager(
                 self.appContext?.permissions,
@@ -183,6 +201,7 @@ public class ExpoTwoWayAudioModule: Module {
             ON_INPUT_VOLUME_LEVEL_EVENT_NAME,
             ON_RECORDING_CHANGE_EVENT_NAME,
             ON_AUDIO_INTERRUPTION_EVENT_NAME,
+            ON_PLAYBACK_STATE_CHANGE_EVENT_NAME,
             ON_SPEECH_TEXT_EVENT_NAME,
             ON_SPEECH_ERROR_EVENT_NAME,
             ON_SPEECH_DOWNLOAD_PROGRESS_EVENT_NAME,
@@ -225,6 +244,17 @@ public class ExpoTwoWayAudioModule: Module {
                 ON_RECORDING_CHANGE_EVENT_NAME,
                 [
                     "data": self?.audioEngine?.isRecording
+                ])
+        }
+    }
+
+    private func setupPlaybackStateChangeCallback() {
+        audioEngine?.onPlaybackStateChangeCallback = { [weak self] speaking, rms in
+            self?.sendEvent(
+                ON_PLAYBACK_STATE_CHANGE_EVENT_NAME,
+                [
+                    "speaking": speaking,
+                    "rms": rms
                 ])
         }
     }

@@ -7,6 +7,10 @@ type EventSubscription = {
 type ExpoTwoWayAudioWebModule = {
   initialize: () => Promise<boolean>
   bypassVoiceProcessing: (bypass: boolean) => void
+  playPcm24k: (base64Data: string) => void
+  interruptPlayback: () => void
+  setSpeakerOutput: (enabled: boolean) => void
+  setHoldAudioMode: (onHoldQuiet: boolean) => void
   toggleRecording: (val: boolean) => boolean
   isRecording: () => boolean
   tearDown: () => void
@@ -31,6 +35,10 @@ const ExpoTwoWayAudioModule: ExpoTwoWayAudioWebModule = {
   // QA browser has no shell microphone; page dictation uses platform/dictation-capture.web.ts native.audio.start|read|stop instead.
   initialize: async () => false,
   bypassVoiceProcessing: noop,
+  playPcm24k: noop,
+  interruptPlayback: noop,
+  setSpeakerOutput: noop,
+  setHoldAudioMode: noop,
   toggleRecording: () => false,
   isRecording: () => false,
   tearDown: noop,

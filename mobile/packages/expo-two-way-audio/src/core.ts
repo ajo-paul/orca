@@ -9,6 +9,22 @@ export function bypassVoiceProcessing(bypass: boolean) {
   return ExpoTwoWayAudioModule.bypassVoiceProcessing(bypass)
 }
 
+export function playPcm24k(base64Data: string) {
+  return ExpoTwoWayAudioModule.playPcm24k(base64Data)
+}
+
+export function interruptPlayback() {
+  return ExpoTwoWayAudioModule.interruptPlayback()
+}
+
+export function setSpeakerOutput(enabled: boolean) {
+  return ExpoTwoWayAudioModule.setSpeakerOutput(enabled)
+}
+
+export function setHoldAudioMode(onHoldQuiet: boolean) {
+  return ExpoTwoWayAudioModule.setHoldAudioMode(onHoldQuiet)
+}
+
 export function toggleRecording(val: boolean): boolean {
   return ExpoTwoWayAudioModule.toggleRecording(val)
 }
