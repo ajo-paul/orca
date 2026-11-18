@@ -62,6 +62,10 @@ export const HOST_STACK_SCREENS = [
       return translate('navigation.hostStackScreens.pullRequest', 'Pull Request')
     }
   },
+  {
+    name: '[hostId]/voice-call',
+    title: 'Dev| Oncall'
+  },
   // Declare catch-all last for its title; named children must match first. Undeclared routes would render with group options anyway.
   {
     name: '[hostId]/[...page]',
