@@ -25,8 +25,8 @@ concurrency:
 jobs:
   build-unsigned-ipa:
     name: Build Unsigned iOS IPA
-    # macos-latest (macos-15) includes Xcode 26.3 (Swift 6.2) with fast runner availability.
-    runs-on: macos-latest
+    # Use Intel x86_64 runner (macos-15-intel) with Xcode 26.3 to avoid macOS arm64 runner capacity queues.
+    runs-on: macos-15-intel
     timeout-minutes: 90
 
     defaults:
